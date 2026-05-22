@@ -743,6 +743,7 @@ fun BeanDetailScreen(
     onEdit: () -> Unit
 ) {
     val data by viewModel.beanWithRecipes(beanId).collectAsState()
+    var showDeleteConfirm by remember { mutableStateOf(false) }
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
@@ -754,7 +755,7 @@ fun BeanDetailScreen(
                 },
                 actions = {
                     IconButton(onClick = onEdit) { Icon(Icons.Rounded.Edit, contentDescription = "编辑") }
-                    IconButton(onClick = { viewModel.deleteBean(beanId, onBack) }) {
+                    IconButton(onClick = { showDeleteConfirm = true }) {
                         Icon(Icons.Rounded.Delete, contentDescription = "删除")
                     }
                 },
@@ -841,6 +842,28 @@ fun ReportScreen(viewModel: CoffeeViewModel, onBack: () -> Unit) {
                 }
             }
         }
+    }
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("确认删除这款咖啡？") },
+            text = { Text("删除后，这款咖啡的档案、冲煮配方和每日饮用记录都会一起删除，无法在应用内恢复。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirm = false
+                        viewModel.deleteBean(beanId, onBack)
+                    }
+                ) {
+                    Text("确认删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
 
