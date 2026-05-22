@@ -38,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.BarChart
+import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Coffee
 import androidx.compose.material.icons.rounded.Delete
@@ -157,6 +158,7 @@ data class CoffeeBean(
     val totalPrice: Double = 0.0,
     val pricePerGram: Double = 0.0,
     val restingDays: Int = 7,
+    val flavorDescription: String = "",
     val flavorNotes: String = "",
     val imageUri: String = "",
     val rating: Int = 0,
@@ -265,7 +267,7 @@ interface CoffeeDao {
     suspend fun insertLog(log: ConsumptionLog): Long
 }
 
-@Database(entities = [CoffeeBean::class, BrewingRecipe::class, ConsumptionLog::class], version = 3, exportSchema = false)
+@Database(entities = [CoffeeBean::class, BrewingRecipe::class, ConsumptionLog::class], version = 4, exportSchema = false)
 abstract class CoffeeDatabase : RoomDatabase() {
     abstract fun dao(): CoffeeDao
 
@@ -278,7 +280,7 @@ abstract class CoffeeDatabase : RoomDatabase() {
                     context.applicationContext,
                     CoffeeDatabase::class.java,
                     "coffee-cellar.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
             }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -312,6 +314,12 @@ abstract class CoffeeDatabase : RoomDatabase() {
         private val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE beans ADD COLUMN totalPrice REAL NOT NULL DEFAULT 0")
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE beans ADD COLUMN flavorDescription TEXT NOT NULL DEFAULT ''")
             }
         }
     }
@@ -481,8 +489,12 @@ fun CoffeeApp() {
                         viewModel = viewModel,
                         onBack = { navController.popBackStack() },
                         onSaved = { id ->
-                            navController.navigate("detail/$id") {
-                                popUpTo("beans")
+                            if (navController.previousBackStackEntry != null) {
+                                navController.popBackStack()
+                            } else {
+                                navController.navigate("detail/$id") {
+                                    popUpTo("beans")
+                                }
                             }
                         }
                     )
@@ -656,6 +668,11 @@ private fun InsightCharts(beans: List<CoffeeBean>) {
     Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("豆仓图表", fontWeight = FontWeight.Bold)
+            BeanThumbnailRail(beans)
+            MiniDistributionChart(
+                title = "产地分布",
+                data = beans.groupingBy { it.originCategory() }.eachCount()
+            )
             MiniDistributionChart(
                 title = "处理法分布",
                 data = beans.groupingBy { it.process.ifBlank { "未记录" } }.eachCount()
@@ -664,6 +681,26 @@ private fun InsightCharts(beans: List<CoffeeBean>) {
                 title = "单克价格区间",
                 data = beans.groupingBy { it.priceBand() }.eachCount()
             )
+        }
+    }
+}
+
+@Composable
+private fun BeanThumbnailRail(beans: List<CoffeeBean>) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("咖啡缩略图", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(beans.take(10), key = { it.id }) { bean ->
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(72.dp)) {
+                    PackageImage(bean.imageUri, Modifier.size(56.dp).clip(RoundedCornerShape(16.dp)))
+                    Text(
+                        bean.displayName(),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+            }
         }
     }
 }
@@ -740,6 +777,13 @@ fun BeanDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 item { DetailHero(bean) }
+                item {
+                    Button(onClick = onEdit, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Rounded.Edit, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("编辑咖啡信息")
+                    }
+                }
                 item { BeanFacts(bean) }
                 item { DrinkLogger(bean = bean, onLog = viewModel::logDrink) }
                 item {
@@ -840,6 +884,9 @@ private fun DetailHero(bean: CoffeeBean) {
                 }
                 RatingStars(bean.rating)
             }
+            if (bean.flavorDescription.isNotBlank()) {
+                Text("风味描述：${bean.flavorDescription}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+            }
             Text(bean.flavorNotes.ifBlank { "还没有记录风味笔记。" })
         }
     }
@@ -906,24 +953,36 @@ fun BeanEditScreen(
     onBack: () -> Unit,
     onSaved: (Long) -> Unit
 ) {
-    val existing by if (beanId == 0L) {
+    val beanData by if (beanId == 0L) {
         remember { mutableStateOf<BeanWithRecipes?>(null) }
     } else {
-        viewModel.beanWithRecipes(beanId).collectAsState()
+        remember(beanId) { viewModel.beanWithRecipes(beanId) }.collectAsState()
     }
-    var form by remember { mutableStateOf(CoffeeBean()) }
-    LaunchedEffect(existing?.bean?.id) {
-        existing?.bean?.let { form = it }
+    var form by remember(beanId) { mutableStateOf(CoffeeBean()) }
+    var loadedBeanId by remember(beanId) { mutableStateOf(0L) }
+    LaunchedEffect(beanData?.bean) {
+        val bean = beanData?.bean
+        if (bean != null && loadedBeanId != bean.id) {
+            form = bean
+            loadedBeanId = bean.id
+        }
     }
     val context = LocalContext.current
     val roasters by viewModel.roasterSuggestions.collectAsState()
     val processes by viewModel.processSuggestions.collectAsState()
     val roastLevels by viewModel.roastLevelSuggestions.collectAsState()
+    var cameraUri by remember { mutableStateOf<Uri?>(null) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
             runCatching {
                 context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
+            form = form.copy(imageUri = uri.toString())
+        }
+    }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        val uri = cameraUri
+        if (success && uri != null) {
             form = form.copy(imageUri = uri.toString())
         }
     }
@@ -941,6 +1000,19 @@ fun BeanEditScreen(
             )
         }
     ) { padding ->
+        if (beanId != 0L && beanData == null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .premiumBackground()
+                    .padding(padding),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("正在载入原咖啡档案…")
+            }
+            return@Scaffold
+        }
+
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -960,10 +1032,24 @@ fun BeanEditScreen(
                 )
             }
             item {
-                FilledTonalButton(onClick = { imagePicker.launch(arrayOf("image/*")) }, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Rounded.Image, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("选择包装照片")
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    FilledTonalButton(onClick = { imagePicker.launch(arrayOf("image/*")) }, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Rounded.Image, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("相册")
+                    }
+                    FilledTonalButton(
+                        onClick = {
+                            val uri = createCameraImageUri(context)
+                            cameraUri = uri
+                            cameraLauncher.launch(uri)
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Rounded.CameraAlt, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("拍照")
+                    }
                 }
             }
             item {
@@ -1009,7 +1095,8 @@ fun BeanEditScreen(
                 }
             }
             item { UnitPricePreview(form) }
-            item { NumberWheelField("养豆天数", form.restingDays, 0, 45) { form = form.copy(restingDays = it) } }
+            item { RestingDaysField(form.restingDays) { form = form.copy(restingDays = it) } }
+            item { CoffeeTextField("风味描述", form.flavorDescription) { form = form.copy(flavorDescription = it) } }
             item { CoffeeTextField("风味笔记", form.flavorNotes) { form = form.copy(flavorNotes = it) } }
             item { InventoryPicker(form.inventoryStatus) { form = form.copy(inventoryStatus = it) } }
             item { RatingPicker(form.rating) { form = form.copy(rating = it) } }
@@ -1195,6 +1282,44 @@ private fun NumberWheelField(label: String, value: Int, min: Int, max: Int, onCh
             onConfirm = {
                 onChange(it)
                 show = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun RestingDaysField(value: Int, onChange: (Int) -> Unit) {
+    var text by remember(value) { mutableStateOf(value.toString()) }
+    var showWheel by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = {
+                text = it.filter { char -> char.isDigit() }.take(2)
+                onChange(text.toIntOrNull()?.coerceIn(0, 45) ?: 0)
+            },
+            label = { Text("养豆天数") },
+            modifier = Modifier.weight(1f),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            shape = RoundedCornerShape(16.dp),
+            suffix = { Text("天") }
+        )
+        FilledTonalButton(onClick = { showWheel = true }) {
+            Text("轮盘")
+        }
+    }
+    if (showWheel) {
+        NumberWheelDialog(
+            title = "养豆天数",
+            initial = value,
+            min = 0,
+            max = 45,
+            suffix = "天",
+            onDismiss = { showWheel = false },
+            onConfirm = {
+                text = it.toString()
+                onChange(it)
+                showWheel = false
             }
         )
     }
@@ -1451,6 +1576,40 @@ private fun CoffeeBean.effectivePricePerGram(): Double =
 private fun calculateUnitPrice(packageWeight: Double, totalPrice: Double): Double =
     if (packageWeight > 0.0 && totalPrice > 0.0) totalPrice / packageWeight else 0.0
 
+private fun CoffeeBean.originCategory(): String {
+    val text = listOf(country, province, village, estate, washingStation, batch, flavorNotes)
+        .joinToString(" ")
+        .lowercase(Locale.ROOT)
+    return when {
+        text.isBlank() -> "未记录"
+        text.containsAny("sidamo", "sidama", "西达摩") -> "埃塞俄比亚 · Sidamo"
+        text.containsAny("guji", "古吉") -> "埃塞俄比亚 · Guji"
+        text.containsAny("yirgacheffe", "耶加", "耶加雪菲") -> "埃塞俄比亚 · Yirgacheffe"
+        text.containsAny("harrar", "哈拉") -> "埃塞俄比亚 · Harrar"
+        text.containsAny("ethiopia", "埃塞") -> "埃塞俄比亚"
+        text.containsAny("panama", "巴拿马") -> "巴拿马"
+        text.containsAny("colombia", "哥伦比亚") -> "哥伦比亚"
+        text.containsAny("kenya", "肯尼亚") -> "肯尼亚"
+        text.containsAny("costa rica", "哥斯达黎加") -> "哥斯达黎加"
+        text.containsAny("guatemala", "危地马拉") -> "危地马拉"
+        text.containsAny("brazil", "巴西") -> "巴西"
+        text.containsAny("indonesia", "印尼", "苏门答腊") -> "印度尼西亚"
+        country.isNotBlank() && province.isNotBlank() -> "${country} · ${province}"
+        country.isNotBlank() -> country
+        province.isNotBlank() -> province
+        else -> "其他产区"
+    }
+}
+
+private fun String.containsAny(vararg tokens: String): Boolean =
+    tokens.any { contains(it.lowercase(Locale.ROOT)) }
+
+private fun createCameraImageUri(context: Context): Uri {
+    val dir = File(context.cacheDir, "camera").apply { mkdirs() }
+    val file = File.createTempFile("coffee-package-", ".jpg", dir)
+    return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+}
+
 private fun buildReport(title: String, beans: List<CoffeeBean>, logs: List<ConsumptionLog>, start: LocalDate): ReportStats {
     val recent = logs.filter { log ->
         val date = runCatching { LocalDate.parse(log.date) }.getOrNull()
@@ -1476,7 +1635,7 @@ private fun buildCsv(beans: List<CoffeeBean>, recipes: List<BrewingRecipe>, logs
         listOf(
             "类型", "咖啡豆ID", "烘焙商", "烘焙日期", "豆种/品种", "处理法", "烘焙度",
             "国家", "省份/产区", "村庄", "庄园", "处理站", "批次", "包装重量", "剩余库存",
-            "整包售价", "单克价格", "养豆天数", "风味笔记", "评分", "库存状态", "滤杯/冲煮器具", "研磨度",
+            "整包售价", "单克价格", "养豆天数", "风味描述", "风味笔记", "评分", "库存状态", "滤杯/冲煮器具", "研磨度",
             "水温", "粉量", "注水量", "粉水比", "萃取时间", "品饮记录", "日期", "消耗克数"
         )
     )
@@ -1485,20 +1644,20 @@ private fun buildCsv(beans: List<CoffeeBean>, recipes: List<BrewingRecipe>, logs
             "咖啡豆", bean.id.toString(), bean.roaster, bean.roastDate, bean.variety, bean.process,
             bean.roastLevel, bean.country, bean.province, bean.village, bean.estate, bean.washingStation,
             bean.batch, bean.packageWeight.toString(), bean.remainingGrams.toString(), bean.totalPrice.toString(),
-            bean.effectivePricePerGram().toString(), bean.restingDays.toString(), bean.flavorNotes, bean.rating.toString(), bean.inventoryStatus,
+            bean.effectivePricePerGram().toString(), bean.restingDays.toString(), bean.flavorDescription, bean.flavorNotes, bean.rating.toString(), bean.inventoryStatus,
             "", "", "", "", "", "", "", "", ""
         )
     }
     recipes.forEach { recipe ->
         rows += listOf(
-            "配方", recipe.beanId.toString(), "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", recipe.brewer,
+            "配方", recipe.beanId.toString(), "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", recipe.brewer,
             recipe.grindSize, recipe.waterTemperature.toString(), recipe.dose.toString(),
             recipe.waterAmount.toString(), recipe.ratio, recipe.time, recipe.tastingNotes, "", ""
         )
     }
     logs.forEach { log ->
         rows += listOf(
-            "每日记录", log.beanId.toString(), "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+            "每日记录", log.beanId.toString(), "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
             "", "", "", "", "", "", log.note, log.date, log.grams.toString()
         )
     }
