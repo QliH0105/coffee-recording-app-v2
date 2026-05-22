@@ -796,6 +796,28 @@ fun BeanDetailScreen(
             }
         }
     }
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("确认删除这款咖啡？") },
+            text = { Text("删除后，这款咖啡的档案、冲煮配方和每日饮用记录都会一起删除，无法在应用内恢复。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirm = false
+                        viewModel.deleteBean(beanId, onBack)
+                    }
+                ) {
+                    Text("确认删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -842,28 +864,6 @@ fun ReportScreen(viewModel: CoffeeViewModel, onBack: () -> Unit) {
                 }
             }
         }
-    }
-    if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("确认删除这款咖啡？") },
-            text = { Text("删除后，这款咖啡的档案、冲煮配方和每日饮用记录都会一起删除，无法在应用内恢复。") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showDeleteConfirm = false
-                        viewModel.deleteBean(beanId, onBack)
-                    }
-                ) {
-                    Text("确认删除", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) {
-                    Text("取消")
-                }
-            }
-        )
     }
 }
 
